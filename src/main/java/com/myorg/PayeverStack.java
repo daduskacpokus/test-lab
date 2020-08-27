@@ -1,13 +1,14 @@
 package com.myorg;
 
-import software.amazon.awscdk.core.CfnOutput;
 import software.amazon.awscdk.core.Construct;
 import software.amazon.awscdk.core.Stack;
 import software.amazon.awscdk.core.StackProps;
 import software.amazon.awscdk.services.ec2.InstanceType;
 import software.amazon.awscdk.services.ec2.Vpc;
 import software.amazon.awscdk.services.ec2.VpcProps;
-import software.amazon.awscdk.services.eks.*;
+import software.amazon.awscdk.services.eks.Cluster;
+import software.amazon.awscdk.services.eks.HelmChartOptions;
+import software.amazon.awscdk.services.eks.KubernetesVersion;
 import software.amazon.awscdk.services.iam.AccountRootPrincipal;
 import software.amazon.awscdk.services.iam.Role;
 
@@ -20,62 +21,57 @@ public class PayeverStack extends Stack {
 
     public PayeverStack(final Construct scope, final String id, final StackProps props) {
         super(scope, id, props);
-
-        // The code that defines your stack goes here
         Vpc vpc = new Vpc(this, "vpc", VpcProps.builder()
+                .enableDnsHostnames(true)
+                .enableDnsSupport(true)
                 .build());
         Role clusterAdmin = Role.Builder.create(this, "admin")
                 .assumedBy(new AccountRootPrincipal())
                 .build();
-        Cluster cluster = Cluster.Builder.create(this, "fun")
+        Cluster cluster = Cluster.Builder.create(this, "payever")
                 .vpc(vpc)
                 .outputConfigCommand(true)
                 .mastersRole(clusterAdmin)
                 .version(KubernetesVersion.V1_17)
                 .defaultCapacityInstance(new InstanceType("t2.large"))
-                .defaultCapacity(2)
+                .defaultCapacity(1)
                 .build();
-        cluster.addChart("mysql", HelmChartOptions.builder()
-                .chart("mysql")
-                .namespace("db")
-                .repository("https://kubernetes-charts.storage.googleapis.com/")
-                .values(Map.of("configurationFiles",
-                        Map.of("mysql_custom.cnf", "[mysqld]\r\nslow_query_log = 1")))
-                .build());
-        cluster.addChart("prometheus", HelmChartOptions.builder()
-                .chart("prometheus")
-                .namespace("grafana")
-                .repository("https://kubernetes-charts.storage.googleapis.com/")
-                .build());
-        cluster.addChart("loki", HelmChartOptions.builder()
-                .chart("loki-stack")
-                .repository("https://grafana.github.io/loki/charts")
-                .namespace("grafana")
-                .values(Map.of(
-                        "fluent-bit", Map.of("enabled", true),
-                        "promtail", Map.of("enabled", false)
-                ))
-                .build());
-        cluster.addChart("haproxy", HelmChartOptions.builder()
-                .chart("kubernetes-ingress")
-                .values(Map.of(
-                        "controller",Map.of(
-                                "kind","DaemonSet",
-                                "ingressClass","haproxy"
-                        ))
+        Map mysqlChart = Map.of(
+                "id", "mysql",
+                "name", "mysql",
+                "space", "grafana",
+                "repo", "https://kubernetes-charts.storage.googleapis.com/",
+                "value", Map.of(
+                        "configurationFiles", Map.of("mysql_custom.cnf", "[mysqld]\r\nslow_query_log = 1"),
+                        //https://github.com/helm/charts/tree/master/stable/mysql
+                        "metrics", Map.of("enabled", true))
+        );
+        Map prometheusChart = Map.of(
+                "id", "prometheus",
+                "name", "prometheus",
+                "space", "grafana",
+                "repo", "https://kubernetes-charts.storage.googleapis.com/",
+                "value", Map.of()
+        );
+        Map haproxyChart = Map.of(
+                "id", "haproxy",
+                "name", "kubernetes-ingress",
+                "space", "ingress",
+                "repo", "https://haproxytech.github.io/helm-charts",
+                "value", Map.of(
+                        "controller", Map.of(
+                                "kind", "DaemonSet",
+                                "daemonset", Map.of("useHostPort", true),
+                                "ingressClass", "haproxy",
+                                "service", Map.of("type", "LoadBalancer"))
                 )
-                .repository("https://haproxytech.github.io/helm-charts")
-                .build());
-        cluster.addChart("grafana", HelmChartOptions.builder()
-                .chart("grafana")
-                .namespace("grafana")
-                .repository("https://kubernetes-charts.storage.googleapis.com/")
-                .values(Map.of(
-                        "sidecar", Map.of("datasources", Map.of("enabled", true)),
-                        "dashboards", Map.of("default", Map.of(
-                                "k8s", Map.of(
-                                        "gnetId", 6417,
-                                        "datasource", "Prometheus"))),
+        );
+        Map grafanaChart = Map.of(
+                "id", "grafana",
+                "name", "grafana",
+                "space", "grafana",
+                "repo", "https://kubernetes-charts.storage.googleapis.com/",
+                "value", Map.of(
                         "ingress", Map.of(
                                 "enabled", true,
                                 "annotations", Map.of(
@@ -84,7 +80,27 @@ public class PayeverStack extends Stack {
                                 ),
                                 "path", "/"
                         )
-                ))
+                )
+        );
+        createChart(cluster, haproxyChart, true);
+        createChart(cluster, mysqlChart, false);
+        createChart(cluster, prometheusChart, false);
+        createChart(cluster, grafanaChart, false);
+    }
+
+    /**
+     * @param cluster
+     * @param chart
+     * @param wait
+     */
+    void createChart(Cluster cluster, Map chart, boolean wait) {
+        cluster.addChart(chart.get("id").toString(), HelmChartOptions.builder()
+                .chart(chart.get("name").toString())
+                .namespace(chart.get("space").toString())
+                .repository(chart.get("repo").toString())
+                .values((Map) chart.get("value"))
+                .wait(wait)
                 .build());
     }
+
 }
